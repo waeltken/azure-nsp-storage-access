@@ -1,0 +1,146 @@
+name: Integration smoke
+
+on:
+  workflow_dispatch:
+    inputs:
+      azure-client-id:
+        description: Client ID of a narrowly scoped smoke-test identity
+        required: true
+        type: string
+      azure-subscription-id:
+        description: Azure subscription containing the NSP profile
+        required: true
+        type: string
+      azure-tenant-id:
+        description: Azure tenant ID
+        required: true
+        type: string
+      profile-id:
+        description: Existing enforced NSP profile resource ID
+        required: true
+        type: string
+      storage-account:
+        description: Existing storage account protected by this profile
+        required: true
+        type: string
+      container-name:
+        description: Existing private Blob container
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  integration:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - uses: azure/login@v3
+        with:
+          client-id: ${{ inputs.azure-client-id }}
+          subscription-id: ${{ inputs.azure-subscription-id }}
+          tenant-id: ${{ inputs.azure-tenant-id }}
+      - name: Observe access denied before creating a rule
+        env:
+          STORAGE_ACCOUNT: ${{ inputs.storage-account }}
+          CONTAINER_NAME: ${{ inputs.container-name }}
+        shell: bash
+        run: |
+          if az storage container show --account-name "$STORAGE_ACCOUNT" --name "$CONTAINER_NAME" --auth-mode login --only-show-errors; then
+            echo '::error::The smoke runner already has container access; use a profile that initially denies it.'
+            exit 1
+          fi
+          echo 'Container access denied before temporary allowance.'
+      - name: Add first allowance and observe authorized access
+        id: first
+        uses: ./
+        with:
+          profile-id: ${{ inputs.profile-id }}
+          storage-account: ${{ inputs.storage-account }}
+          container-name: ${{ inputs.container-name }}
+      - name: Add overlapping allowance for the same runner
+        id: second
+        uses: ./
+        with:
+          profile-id: ${{ inputs.profile-id }}
+          storage-account: ${{ inputs.storage-account }}
+          container-name: ${{ inputs.container-name }}
+      - name: Verify both exact per-invocation allowances
+        env:
+          FIRST_RULE: ${{ steps.first.outputs.rule-id }}
+          SECOND_RULE: ${{ steps.second.outputs.rule-id }}
+          RUNNER_IP: ${{ steps.first.outputs.runner-ip }}
+        shell: bash
+        run: |
+          test "$FIRST_RULE" != "$SECOND_RULE"
+          for rule in "$FIRST_RULE" "$SECOND_RULE"; do
+            az rest --method get --url "https://management.azure.com${rule}?api-version=2024-07-01" --only-show-errors |
+              jq -e --arg cidr "$RUNNER_IP/32" '.properties.direction == "Inbound" and .properties.addressPrefixes == [$cidr]'
+          done
+      - name: Remove first allowance even if the workload failed
+        if: ${{ always() && steps.first.outputs.rule-id != '' }}
+        uses: ./
+        with:
+          operation: remove
+          rule-id: ${{ steps.first.outputs.rule-id }}
+      - name: Verify cleanup did not remove the overlapping allowance
+        if: ${{ success() }}
+        env:
+          SECOND_RULE: ${{ steps.second.outputs.rule-id }}
+        shell: bash
+        run: |
+          az rest --method get --url "https://management.azure.com${SECOND_RULE}?api-version=2024-07-01" --query properties.provisioningState -o tsv --only-show-errors
+      - name: Repeat removal to exercise idempotent cleanup
+        if: ${{ always() && steps.first.outputs.rule-id != '' }}
+        uses: ./
+        with:
+          operation: remove
+          rule-id: ${{ steps.first.outputs.rule-id }}
+      - name: Remove second allowance
+        if: ${{ always() && steps.second.outputs.rule-id != '' }}
+        uses: ./
+        with:
+          operation: remove
+          rule-id: ${{ steps.second.outputs.rule-id }}
+      - name: Force a readiness failure after rule creation
+        id: failed_access
+        continue-on-error: true
+        uses: ./
+        with:
+          profile-id: ${{ inputs.profile-id }}
+          storage-account: ${{ inputs.storage-account }}
+          container-name: nsp-smoke-missing-${{ github.run_id }}
+          timeout-seconds: '30'
+      - name: Verify failed setup preserved its cleanup handle and rolled back
+        env:
+          PROFILE_ID: ${{ inputs.profile-id }}
+          FAILED_RULE: ${{ steps.failed_access.outputs.rule-id }}
+          OUTCOME: ${{ steps.failed_access.outcome }}
+        shell: bash
+        run: |
+          test "$OUTCOME" = failure
+          test -n "$FAILED_RULE"
+          az rest --method get --url "https://management.azure.com${PROFILE_ID}/accessRules?api-version=2024-07-01" --only-show-errors |
+            jq -e --arg id "$FAILED_RULE" 'all(.value[]; (.id | ascii_downcase) != ($id | ascii_downcase))'
+      - name: Always clean up a partially failed setup
+        if: ${{ always() && steps.failed_access.outputs.rule-id != '' }}
+        uses: ./
+        with:
+          operation: remove
+          rule-id: ${{ steps.failed_access.outputs.rule-id }}
+      - name: Verify all smoke allowances are absent
+        if: ${{ always() }}
+        env:
+          PROFILE_ID: ${{ inputs.profile-id }}
+          FIRST_RULE: ${{ steps.first.outputs.rule-id }}
+          SECOND_RULE: ${{ steps.second.outputs.rule-id }}
+          FAILED_RULE: ${{ steps.failed_access.outputs.rule-id }}
+        shell: bash
+        run: |
+          az rest --method get --url "https://management.azure.com${PROFILE_ID}/accessRules?api-version=2024-07-01" --only-show-errors |
+            jq -e --arg first "$FIRST_RULE" --arg second "$SECOND_RULE" --arg failed "$FAILED_RULE" '
+              all(.value[]; .id as $id |
+                all([$first, $second, $failed][]; ascii_downcase != ($id | ascii_downcase)))'

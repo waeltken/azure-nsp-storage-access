@@ -1,0 +1,53 @@
+name: Azure NSP storage access
+description: >-
+  Temporarily grant a GitHub-hosted runner IPv4 access to an Azure NSP profile
+  and verify Entra-authenticated storage access.
+author: waeltken
+branding:
+  icon: shield
+  color: blue
+
+inputs:
+  operation:
+    description: Add a temporary rule or remove the exact rule returned by add (add or remove).
+    required: false
+    default: add
+  profile-id:
+    description: Full ARM ID of the existing NSP profile. Required for add.
+    required: false
+  storage-account:
+    description: Storage account whose authenticated container access must become ready. Required for add.
+    required: false
+  container-name:
+    description: Existing container to probe using Azure CLI login credentials. Required for add.
+    required: false
+  rule-id:
+    description: Exact full ARM rule ID returned by add. Required for remove.
+    required: false
+  timeout-seconds:
+    description: Positive integer operation deadline in seconds. Failed-add rollback gets a separate deadline.
+    required: false
+    default: '300'
+
+outputs:
+  rule-id:
+    description: Full ARM ID of the unique temporary rule, written before creation is attempted.
+    value: ${{ steps.access.outputs.rule-id }}
+  runner-ip:
+    description: Discovered public IPv4 address without a CIDR suffix (add only).
+    value: ${{ steps.access.outputs.runner-ip }}
+
+runs:
+  using: composite
+  steps:
+    - name: Manage temporary NSP access
+      id: access
+      shell: bash
+      env:
+        INPUT_OPERATION: ${{ inputs.operation }}
+        INPUT_PROFILE_ID: ${{ inputs.profile-id }}
+        INPUT_STORAGE_ACCOUNT: ${{ inputs.storage-account }}
+        INPUT_CONTAINER_NAME: ${{ inputs.container-name }}
+        INPUT_RULE_ID: ${{ inputs.rule-id }}
+        INPUT_TIMEOUT_SECONDS: ${{ inputs.timeout-seconds }}
+      run: exec bash "$GITHUB_ACTION_PATH/scripts/access.sh"

@@ -1,0 +1,33 @@
+name: Static checks
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  static-checks:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out source without persisted credentials
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Install static checkers
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends shellcheck yamllint
+      - name: Parse action and workflow YAML
+        run: >-
+          yamllint
+          -d '{extends: default, rules: {document-start: disable,
+          line-length: disable, truthy: {check-keys: false}}}'
+          action.yaml .github/workflows/*.yaml
+      - name: Check Bash syntax
+        run: bash -n scripts/access.sh
+      - name: Check Bash safety
+        run: shellcheck scripts/access.sh
