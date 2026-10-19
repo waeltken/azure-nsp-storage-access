@@ -1,6 +1,6 @@
 # Azure NSP storage access
 
-A YAML composite GitHub Action that temporarily admits an ordinary `ubuntu-latest` runner's current public IPv4 address to an existing Azure Network Security Perimeter (NSP) profile. It creates one unique inbound `/32` rule per invocation, waits for ARM provisioning, and verifies an **Entra-authenticated read of the specified Blob container** before returning.
+A YAML composite GitHub Action that temporarily admits an ordinary `ubuntu-latest` runner's current public IPv4 address to an existing Azure Network Security Perimeter (NSP) profile. It creates one unique inbound `/32` rule per invocation, waits for ARM provisioning, and verifies an **Entra-authenticated blob listing in the specified container** before returning.
 
 The action never changes the perimeter's **Enforced** mode, storage settings, shared-key policy, or existing rules. It uses the Azure public cloud ARM API `2024-07-01`; there is no JavaScript runtime, bundled code, or dependency installation.
 
@@ -118,7 +118,7 @@ Rule names are `gha-<GitHub run ID>-<run attempt>-<96 random bits in hex>`, at m
 
 ## Readiness, failures, and cleanup
 
-Add polls ARM until provisioning succeeds and then polls `az storage container show --auth-mode login` against the exact account/container. It clears ambient storage-key, connection-string, SAS, and endpoint overrides for the probe. A successful ARM response alone is **not** readiness: the authenticated data-plane read must succeed. The probe does not prove that a later Terraform write has sufficient RBAC permissions.
+Add polls ARM until provisioning succeeds and then polls `az storage blob list --auth-mode login --num-results 1` against the exact account/container. This checks the List Blobs operation used by Terraform backend workspace discovery: a container metadata read can succeed while blob listing is still denied during perimeter propagation. Results are discarded, and the readiness probe does not download blob contents. It clears ambient storage-key, connection-string, SAS, and endpoint overrides. A successful ARM response or container metadata read alone is **not** readiness. The probe does not prove that a later Terraform write has sufficient RBAC permissions.
 
 A failed add, a readiness timeout, or a handled cancellation attempts internal rollback of its own rule, including when PUT may have partially succeeded. The original failure remains a failure, and rollback errors report the exact rule ID that needs attention. The caller's final cleanup remains necessary after a successful add and is also safe after internal rollback.
 
@@ -167,8 +167,11 @@ The manually dispatched `Integration smoke` workflow exercises real Azure resour
 from `ubuntu-latest`: denied access before granting, authenticated readiness, two
 overlapping invocation rules, isolated deletion, idempotent removal, failed-setup
 rollback, and preservation of the cleanup output after a failed composite step.
-It verifies that all of its rule IDs are absent at the end. It does not read blob
-contents or run Terraform deployments.
+It verifies that all of its rule IDs are absent at the end. By default, it does
+not download blob contents. Supplying the optional `state-key` input also runs
+`terraform init` against that existing backend with direct OIDC and CLI auth
+disabled. That check can read the existing state but does not print its contents
+or run Terraform plan/apply. Use a state key the test identity may safely read.
 
 Use a disposable identity with only the profile-scoped Network Contributor and
 container-scoped Blob Data Reader roles above. Configure its exact main-branch

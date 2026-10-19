@@ -16,10 +16,10 @@ inputs:
     description: Full ARM ID of the existing NSP profile. Required for add.
     required: false
   storage-account:
-    description: Storage account whose authenticated container access must become ready. Required for add.
+    description: Storage account whose authenticated blob listing must become ready. Required for add.
     required: false
   container-name:
-    description: Existing container to probe using Azure CLI login credentials. Required for add.
+    description: Existing container whose blobs are listed using Azure CLI login credentials. Required for add.
     required: false
   rule-id:
     description: Exact full ARM rule ID returned by add. Required for remove.
