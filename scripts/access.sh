@@ -293,7 +293,7 @@ while true; do
   pause_poll || { error 'Timed out waiting for NSP rule provisioning.'; exit 1; }
 done
 
-printf 'Waiting for Entra-authenticated container access.\n'
+printf 'Waiting for Entra-authenticated blob listing.\n'
 while true; do
   if ((SECONDS >= deadline)); then
     error "Authenticated readiness failed for $INPUT_STORAGE_ACCOUNT/$INPUT_CONTAINER_NAME."
@@ -304,8 +304,9 @@ while true; do
   fi
   if run_bounded env -u AZURE_STORAGE_KEY -u AZURE_STORAGE_CONNECTION_STRING \
     -u AZURE_STORAGE_SAS_TOKEN -u AZURE_STORAGE_SERVICE_ENDPOINT \
-    az storage container show --account-name "$INPUT_STORAGE_ACCOUNT" \
-    --name "$INPUT_CONTAINER_NAME" --auth-mode login --only-show-errors --output none \
+    az storage blob list --account-name "$INPUT_STORAGE_ACCOUNT" \
+    --container-name "$INPUT_CONTAINER_NAME" --num-results 1 \
+    --auth-mode login --only-show-errors --output none \
     >"$workdir/probe-output" 2>"$workdir/probe-error"; then
     break
   fi
@@ -316,6 +317,6 @@ while true; do
   fi
 done
 
-printf 'NSP access is ready; authenticated container read succeeded.\n'
+printf 'NSP access is ready; authenticated blob listing succeeded.\n'
 # The caller must now remove this rule in an always() step after its workload.
 rollback_rule=''

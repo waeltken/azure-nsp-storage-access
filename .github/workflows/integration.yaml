@@ -27,6 +27,11 @@ on:
         description: Existing private Blob container
         required: true
         type: string
+      state-key:
+        description: Optional existing Terraform state key for a read-only backend init check
+        required: false
+        default: ''
+        type: string
 
 permissions:
   contents: read
@@ -49,7 +54,7 @@ jobs:
           CONTAINER_NAME: ${{ inputs.container-name }}
         shell: bash
         run: |
-          if az storage container show --account-name "$STORAGE_ACCOUNT" --name "$CONTAINER_NAME" --auth-mode login --only-show-errors; then
+          if az storage blob list --account-name "$STORAGE_ACCOUNT" --container-name "$CONTAINER_NAME" --num-results 1 --auth-mode login --only-show-errors --output none; then
             echo '::error::The smoke runner already has container access; use a profile that initially denies it.'
             exit 1
           fi
@@ -61,6 +66,34 @@ jobs:
           profile-id: ${{ inputs.profile-id }}
           storage-account: ${{ inputs.storage-account }}
           container-name: ${{ inputs.container-name }}
+      - name: Install Terraform for the optional backend check
+        if: ${{ inputs.state-key != '' }}
+        uses: hashicorp/setup-terraform@v4
+        with:
+          terraform_version: 1.16.6
+      - name: Initialize the existing backend using direct OIDC
+        if: ${{ inputs.state-key != '' }}
+        env:
+          ARM_CLIENT_ID: ${{ inputs.azure-client-id }}
+          ARM_SUBSCRIPTION_ID: ${{ inputs.azure-subscription-id }}
+          ARM_TENANT_ID: ${{ inputs.azure-tenant-id }}
+          ARM_USE_OIDC: 'true'
+          ARM_USE_AZUREAD: 'true'
+          ARM_USE_CLI: 'false'
+          STORAGE_ACCOUNT: ${{ inputs.storage-account }}
+          CONTAINER_NAME: ${{ inputs.container-name }}
+          STATE_KEY: ${{ inputs.state-key }}
+        shell: bash
+        run: |
+          backend_dir="$(mktemp -d)"
+          trap 'rm -rf -- "$backend_dir"' EXIT
+          printf 'terraform {\n  backend "azurerm" {}\n}\n' > "$backend_dir/main.tf"
+          terraform -chdir="$backend_dir" init -input=false \
+            -backend-config="storage_account_name=$STORAGE_ACCOUNT" \
+            -backend-config="container_name=$CONTAINER_NAME" \
+            -backend-config="key=$STATE_KEY" \
+            -backend-config='use_oidc=true' \
+            -backend-config='use_azuread_auth=true'
       - name: Add overlapping allowance for the same runner
         id: second
         uses: ./
