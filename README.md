@@ -8,7 +8,7 @@ The action never changes the perimeter's **Enforced** mode, storage settings, sh
 
 - An existing NSP profile, with the target storage account associated and enforced. This action does not create the perimeter, profile, association, account, or container, and does not make a private-only storage endpoint public.
 - An ordinary GitHub-hosted Ubuntu runner with Bash, Azure CLI (`az`), `curl`, `jq`, Python 3, and GNU `timeout` available. These are available on `ubuntu-latest`. IPv4 HTTPS access to `api.ipify.org`, Azure ARM, Azure sign-in, and the Blob endpoint is required.
-- Run [`azure/login@v3`](https://github.com/Azure/login) **before** this action, using Azure OIDC federation. Give the job `id-token: write` and configure a federated identity credential for the actual repository and branch or environment. For an environment named `production`, the subject is `repo:OWNER/REPO:environment:production`, with audience `api://AzureADTokenExchange`. Restrict that environment to trusted deployment branches and reviewers as appropriate.
+- Run [`azure/login@v3`](https://github.com/Azure/login) **before** this action, using Azure OIDC federation. Give the job `id-token: write` and configure a federated identity credential for the actual repository and branch or environment, with audience `api://AzureADTokenExchange`. Match the repository's actual subject format, including immutable owner/repository IDs where enabled. Restrict the environment to trusted deployment branches and reviewers as appropriate.
 - Assign the login identity **Network Contributor at the existing NSP profile ARM ID**, not at subscription scope. This permits profile access-rule reads, writes, and deletes. Network Contributor can modify other rules in that profile too: only trusted workflows should receive this identity. No Owner role or permission to change storage settings is needed.
 - Assign **Storage Blob Data Reader** at the target container (or a containing storage scope) for the authenticated readiness probe. Its scope can be `/subscriptions/SUBSCRIPTION/resourceGroups/GROUP/providers/Microsoft.Storage/storageAccounts/ACCOUNT/blobServices/default/containers/CONTAINER`. Storage management-plane Reader and account-key lookup permissions are not required.
 - A Terraform backend that writes or leases state needs **Storage Blob Data Contributor** separately, normally at the state container. Data Contributor also satisfies the probe; do not add Data Reader redundantly in that case. Configure the backend to use Entra authentication, not shared keys.
@@ -20,6 +20,21 @@ The ARM profile ID has this full form, without a trailing slash:
 ```
 
 Provision roles and federation before running the workflow; Azure RBAC propagation is independent of network-rule propagation.
+
+Inspect the consuming repository's OIDC configuration before creating its Azure credential:
+
+```bash
+gh api repos/OWNER/REPO/actions/oidc/customization/sub \
+  --jq '{use_default, use_immutable_subject, sub_claim_prefix}'
+```
+
+With the default claim template, append `:environment:production` for a job using
+that environment, or `:ref:refs/heads/main` for a main-branch job without an
+environment. Repositories created after July 15, 2026 use a prefix such as
+`repo:OWNER@OWNER-ID/REPO@REPO-ID`; older repositories may still use
+`repo:OWNER/REPO`. Custom claim templates require their exact configured subject.
+Do not disable immutable claims to make an old credential example work. See
+[GitHub's immutable subject reference](https://docs.github.com/en/actions/reference/security/oidc#immutable-subject-claims).
 
 ## Usage
 
@@ -145,6 +160,22 @@ The action writes its ARM bearer header only into a private temporary directory,
 ## Static checks
 
 The credential-free `Static checks` workflow parses action/workflow YAML and runs Bash syntax checking and ShellCheck. It does not sign in to Azure or run deployments. Live end-to-end use requires the real Azure prerequisites above.
+
+## Live integration check
+
+The manually dispatched `Integration smoke` workflow exercises real Azure resources
+from `ubuntu-latest`: denied access before granting, authenticated readiness, two
+overlapping invocation rules, isolated deletion, idempotent removal, failed-setup
+rollback, and preservation of the cleanup output after a failed composite step.
+It verifies that all of its rule IDs are absent at the end. It does not read blob
+contents or run Terraform deployments.
+
+Use a disposable identity with only the profile-scoped Network Contributor and
+container-scoped Blob Data Reader roles above. Configure its exact main-branch
+OIDC subject for this repository and supply the workflow inputs. Remove that
+identity and its role assignments afterward. Consumers must federate their own
+calling repository; using this public action does not require trusting the action
+repository with their deployment identity.
 
 ## License
 
